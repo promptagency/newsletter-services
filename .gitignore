@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+scraper-env/
+screener-env/
+venv/
+
+# Logs
+*.log
+logs/
+
+# Environment variables
+.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Screenshots and cache
+screenshots/
+screener_screenshots/
+*.png
+*.jpg
+*.jpeg
+
+# Node modules
+node_modules/
+package-lock.json
+
+# Docker
+.dockerignore

@@ -13,8 +13,8 @@ SCREENSHOT_DIR = os.getenv('SCREENSHOT_DIR', '/tmp/screener_screenshots')
 CACHE_DURATION_MINUTES = int(os.getenv('SCREENER_CACHE_DURATION', '60'))
 CLEANUP_OLDER_THAN_HOURS = int(os.getenv('SCREENER_CLEANUP_HOURS', '24'))
 LOG_FILE = os.getenv('SCREENER_LOG_FILE', '/tmp/screener.log')
-NODE_MODULES_PATH = os.getenv('NODE_MODULES_PATH', '/opt/screener/node_modules')
-PUPPETEER_SCRIPT = os.getenv('PUPPETEER_SCRIPT', '/tmp/popup_handler.js')
+NODE_MODULES_PATH = os.getenv('NODE_MODULES_PATH', '/app/node_modules')
+PUPPETEER_SCRIPT = os.getenv('PUPPETEER_SCRIPT', '/app/popup_handler.js')
 
 # Configure logging
 logging.basicConfig(

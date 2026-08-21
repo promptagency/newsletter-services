@@ -7,6 +7,7 @@ import time
 import socket
 import ipaddress
 import hmac
+import threading
 from urllib.parse import urlparse
 from datetime import datetime, timedelta
 from PIL import Image
@@ -68,6 +69,28 @@ request_stats = {
     'start_time': datetime.now()
 }
 
+# gunicorn runs request handlers on multiple threads; all mutations of the
+# shared cache/counters above go through this reentrant lock.
+_state_lock = threading.RLock()
+
+def bump(counter, amount=1):
+    """Thread-safe increment of a request_stats counter."""
+    with _state_lock:
+        request_stats[counter] += amount
+
+# NOTE: _ip_is_public / is_safe_url are kept identical to scraper/scraper.py and
+# popup_handler.js's isPublicIp — change all three together. (The screener also
+# enforces this per-navigation inside popup_handler.js, since Chromium, not this
+# process, performs the actual fetch and follows redirects.)
+def _ip_is_public(ip_str):
+    """True only for globally routable addresses (blocks private/loopback/etc.)."""
+    try:
+        ip = ipaddress.ip_address(ip_str)
+    except ValueError:
+        return False
+    return not (ip.is_private or ip.is_loopback or ip.is_link_local or
+                ip.is_reserved or ip.is_multicast or ip.is_unspecified)
+
 def is_safe_url(url):
     """SSRF guard: allow only http/https URLs that resolve to public IP addresses.
 
@@ -92,9 +115,7 @@ def is_safe_url(url):
         return False, "Hostname could not be resolved"
 
     for info in addr_info:
-        ip = ipaddress.ip_address(info[4][0])
-        if (ip.is_private or ip.is_loopback or ip.is_link_local or
-                ip.is_reserved or ip.is_multicast or ip.is_unspecified):
+        if not _ip_is_public(info[4][0]):
             return False, "URL resolves to a non-public address"
 
     return True, "URL is safe"
@@ -126,38 +147,40 @@ def get_cache_key(url, width, height, full_page, format_type, quality):
 def get_cached_response(url, width, height, full_page, format_type, quality):
     """Check if we have a cached screenshot"""
     cache_key = get_cache_key(url, width, height, full_page, format_type, quality)
-    
-    if cache_key in screenshot_cache:
-        cached_item = screenshot_cache[cache_key]
-        
-        # Check if cache is still valid
-        if datetime.now() < cached_item['expires']:
-            # Check if files still exist
-            all_files_exist = all(
-                os.path.exists(filepath) 
-                for filepath in cached_item['data']['files'].values()
-            )
-            
-            if all_files_exist:
-                request_stats['cache_hits'] += 1
-                return cached_item['data']
+
+    with _state_lock:
+        if cache_key in screenshot_cache:
+            cached_item = screenshot_cache[cache_key]
+
+            # Check if cache is still valid
+            if datetime.now() < cached_item['expires']:
+                # Check if files still exist
+                all_files_exist = all(
+                    os.path.exists(filepath)
+                    for filepath in cached_item['data']['files'].values()
+                )
+
+                if all_files_exist:
+                    request_stats['cache_hits'] += 1
+                    return cached_item['data']
+                else:
+                    # Files were deleted, remove from cache
+                    del screenshot_cache[cache_key]
             else:
-                # Files were deleted, remove from cache
+                # Cache expired
                 del screenshot_cache[cache_key]
-        else:
-            # Cache expired
-            del screenshot_cache[cache_key]
-    
+
     return None
 
 def cache_response(url, width, height, full_page, format_type, quality, response_data):
     """Cache screenshot response"""
     cache_key = get_cache_key(url, width, height, full_page, format_type, quality)
-    screenshot_cache[cache_key] = {
-        'data': response_data,
-        'expires': datetime.now() + timedelta(minutes=CACHE_DURATION_MINUTES),
-        'cached_at': datetime.now()
-    }
+    with _state_lock:
+        screenshot_cache[cache_key] = {
+            'data': response_data,
+            'expires': datetime.now() + timedelta(minutes=CACHE_DURATION_MINUTES),
+            'cached_at': datetime.now()
+        }
 
 def convert_screenshot(png_path, output_format, quality=85):
     """Convert PNG to other formats"""
@@ -278,7 +301,7 @@ def serve_screenshot(filename):
 @app.route('/screenshot', methods=['POST'])
 def take_screenshot():
     """Take a screenshot of a URL"""
-    request_stats['total_requests'] += 1
+    bump('total_requests')
     
     try:
         # Cleanup old screenshots periodically
@@ -371,7 +394,7 @@ def take_screenshot():
             if result.returncode != 0:
                 error_msg = result.stderr or result.stdout or "Unknown error"
                 logger.error(f"Screenshot failed: {error_msg}")
-                request_stats['failed_screenshots'] += 1
+                bump('failed_screenshots')
                 return jsonify({
                     'success': False,
                     'error': 'Screenshot generation failed',
@@ -380,25 +403,25 @@ def take_screenshot():
             
             if not os.path.exists(png_filepath):
                 logger.error(f"Screenshot file not created: {png_filepath}")
-                request_stats['failed_screenshots'] += 1
+                bump('failed_screenshots')
                 return jsonify({
                     'success': False,
                     'error': 'Screenshot file was not created'
                 }), 500
             
-            request_stats['screenshots_taken'] += 1
+            bump('screenshots_taken')
             logger.info(f"Screenshot saved: {png_filepath}")
             
         except subprocess.TimeoutExpired:
             logger.error(f"Screenshot timeout for URL: {url}")
-            request_stats['failed_screenshots'] += 1
+            bump('failed_screenshots')
             return jsonify({
                 'success': False,
                 'error': 'Screenshot generation timeout (60s)'
             }), 500
         except Exception as e:
             logger.error(f"Screenshot process error: {e}")
-            request_stats['failed_screenshots'] += 1
+            bump('failed_screenshots')
             return jsonify({
                 'success': False,
                 'error': f'Screenshot process failed: {str(e)}'
@@ -453,7 +476,7 @@ def take_screenshot():
         
     except Exception as e:
         logger.error(f"Unexpected error: {e}")
-        request_stats['failed_screenshots'] += 1
+        bump('failed_screenshots')
         return jsonify({
             'success': False,
             'error': f'Internal server error: {str(e)}'

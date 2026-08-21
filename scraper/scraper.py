@@ -15,6 +15,7 @@ import os
 import socket
 import ipaddress
 import hmac
+import threading
 
 # Configuration from environment variables
 FLASK_PORT = int(os.getenv('SCRAPER_PORT', '5001'))
@@ -101,6 +102,16 @@ request_stats = {
     'start_time': datetime.now()
 }
 
+# gunicorn runs request handlers on multiple threads, so all mutations of the
+# shared dicts/counters above go through this lock. Reentrant so helpers that
+# already hold it (e.g. bump inside a cache section) don't deadlock.
+_state_lock = threading.RLock()
+
+def bump(counter, amount=1):
+    """Thread-safe increment of a request_stats counter."""
+    with _state_lock:
+        request_stats[counter] += amount
+
 # Capture the real resolver before installing the SSRF guard below.
 _real_getaddrinfo = socket.getaddrinfo
 
@@ -158,15 +169,24 @@ def fetch_url_with_session(url, timeout=30):
     """Fetch URL using the pooled session with SSRF-safe redirect handling and a size cap.
 
     Redirects are followed manually so each hop is re-validated against is_safe_url;
-    this prevents a public URL from bouncing the fetch to an internal target.
+    this prevents a public URL from bouncing the fetch to an internal target. Returns
+    the raw response bytes (undecoded) so the extractors can detect the charset
+    themselves — e.g. from a <meta charset> tag that an HTTP-header-only decode misses.
     """
     current_url = url
+    seen = set()
     try:
         for _ in range(MAX_REDIRECTS + 1):
+            if current_url in seen:
+                logger.error(f"Redirect loop detected fetching URL: {url}")
+                bump('failed_fetches')
+                return None
+            seen.add(current_url)
+
             is_safe, reason = is_safe_url(current_url)
             if not is_safe:
                 logger.warning(f"Blocked unsafe fetch target {current_url}: {reason}")
-                request_stats['failed_fetches'] += 1
+                bump('failed_fetches')
                 return None
 
             response = session.get(current_url, timeout=timeout,
@@ -187,7 +207,7 @@ def fetch_url_with_session(url, timeout=30):
             if declared and declared.isdigit() and int(declared) > MAX_CONTENT_BYTES:
                 logger.warning(f"Response too large ({declared} bytes): {current_url}")
                 response.close()
-                request_stats['failed_fetches'] += 1
+                bump('failed_fetches')
                 return None
 
             # Stream with a hard cap in case Content-Length is missing or understated
@@ -198,29 +218,28 @@ def fetch_url_with_session(url, timeout=30):
                 if total > MAX_CONTENT_BYTES:
                     logger.warning(f"Response exceeded size cap while streaming: {current_url}")
                     response.close()
-                    request_stats['failed_fetches'] += 1
+                    bump('failed_fetches')
                     return None
                 chunks.append(chunk)
 
-            encoding = response.encoding or 'utf-8'
             response.close()
-            request_stats['successful_fetches'] += 1
-            return b''.join(chunks).decode(encoding, errors='replace')
+            bump('successful_fetches')
+            return b''.join(chunks)
 
         logger.error(f"Too many redirects fetching URL: {url}")
-        request_stats['failed_fetches'] += 1
+        bump('failed_fetches')
         return None
     except requests.exceptions.Timeout:
         logger.error(f"Timeout fetching URL: {url}")
-        request_stats['failed_fetches'] += 1
+        bump('failed_fetches')
         return None
     except requests.exceptions.RequestException as e:
         logger.error(f"Request error fetching URL {url}: {e}")
-        request_stats['failed_fetches'] += 1
+        bump('failed_fetches')
         return None
     except Exception as e:
         logger.error(f"Unexpected error fetching URL {url}: {e}")
-        request_stats['failed_fetches'] += 1
+        bump('failed_fetches')
         return None
 
 def get_cache_key(url):
@@ -230,23 +249,25 @@ def get_cache_key(url):
 def get_cached_response(url):
     """Check if we have a cached response for this URL"""
     cache_key = get_cache_key(url)
-    if cache_key in response_cache:
-        cached_item = response_cache[cache_key]
-        if datetime.now() < cached_item['expires']:
-            request_stats['cache_hits'] += 1
-            return cached_item['data']
-        else:
-            del response_cache[cache_key]
+    with _state_lock:
+        if cache_key in response_cache:
+            cached_item = response_cache[cache_key]
+            if datetime.now() < cached_item['expires']:
+                request_stats['cache_hits'] += 1
+                return cached_item['data']
+            else:
+                del response_cache[cache_key]
     return None
 
 def cache_response(url, response_data):
     """Cache a response for future use"""
     cache_key = get_cache_key(url)
-    response_cache[cache_key] = {
-        'data': response_data,
-        'expires': datetime.now() + timedelta(minutes=CACHE_DURATION_MINUTES),
-        'cached_at': datetime.now()
-    }
+    with _state_lock:
+        response_cache[cache_key] = {
+            'data': response_data,
+            'expires': datetime.now() + timedelta(minutes=CACHE_DURATION_MINUTES),
+            'cached_at': datetime.now()
+        }
 
 def extract_external_links(html, base_url, content_only=False):
     """Extract external URLs from HTML content"""
@@ -591,17 +612,18 @@ def sanitize_url(url):
 def rate_limit_check(client_ip):
     """Simple rate limiting for responsible scraping"""
     current_time = time.time()
-    # Bound memory: drop entries older than an hour once the map grows large
-    if len(last_request_times) > 10000:
-        stale = [ip for ip, ts in last_request_times.items() if current_time - ts > 3600]
-        for ip in stale:
-            del last_request_times[ip]
-    if client_ip in last_request_times:
-        time_since_last = current_time - last_request_times[client_ip]
-        if time_since_last < RATE_LIMIT_SECONDS:
-            return False
-    last_request_times[client_ip] = current_time
-    return True
+    with _state_lock:
+        # Bound memory: drop entries older than an hour once the map grows large
+        if len(last_request_times) > 10000:
+            stale = [ip for ip, ts in last_request_times.items() if current_time - ts > 3600]
+            for ip in stale:
+                del last_request_times[ip]
+        if client_ip in last_request_times:
+            time_since_last = current_time - last_request_times[client_ip]
+            if time_since_last < RATE_LIMIT_SECONDS:
+                return False
+        last_request_times[client_ip] = current_time
+        return True
 
 @app.route('/cache/status', methods=['GET'])
 def cache_status():
@@ -638,7 +660,7 @@ def get_stats():
 
 @app.route('/extract', methods=['POST'])
 def extract_article():
-    request_stats['total_requests'] += 1
+    bump('total_requests')
     
     try:
         # Rate limiting (X-Forwarded-For is client-controlled; use the leftmost hop)

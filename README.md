@@ -1,5 +1,7 @@
 # Newsletter Content Extraction Services
 
+[![License: MIT](https://img.shields.io/github/license/promptagency/newsletter-services)](LICENSE)
+
 Two Flask-based microservices that power AI-driven newsletter curation:
 
 | Service      | Port | Purpose                                                       |

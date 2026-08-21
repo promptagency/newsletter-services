@@ -4,11 +4,8 @@ services:
     container_name: newsletter-scraper
     environment:
       - API_KEY=${API_KEY:-}
-    # Bind to loopback by default so the service is not exposed on all
-    # interfaces; Coolify's proxy reaches it over the internal network.
-    # Override BIND_HOST=0.0.0.0 only if you need direct external access.
     ports:
-      - "${BIND_HOST:-127.0.0.1}:5001:5001"
+      - "5001:5001"
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5001/stats"]
@@ -25,7 +22,7 @@ services:
     environment:
       - API_KEY=${API_KEY:-}
     ports:
-      - "${BIND_HOST:-127.0.0.1}:5002:5002"
+      - "5002:5002"
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5002/health"]

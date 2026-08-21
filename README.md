@@ -7,8 +7,10 @@ Two Flask-based microservices that power AI-driven newsletter curation:
 | **Scraper**  | 5001 | Extract article text, metadata, images, and external links   |
 | **Screener** | 5002 | Capture screenshots with popup dismissal and element hiding  |
 
-Both services ship as containers and are deployed together via Docker Compose
-on [Coolify](https://coolify.io/) (self-hosted on Hetzner).
+Both services ship as self-contained Docker containers and run together with
+plain Docker Compose — no reverse proxy or orchestrator required. They can
+optionally be deployed via [Coolify](https://coolify.io/), but that is just one
+hosting option, not a dependency.
 
 ## Features
 
@@ -187,7 +189,13 @@ for the full list (ports, cache durations, rate limit, cleanup interval).
 
 The Docker Compose healthchecks poll `/stats` and `/health` respectively.
 
-## Deployment to Coolify
+## Deployment
+
+The services run anywhere Docker Compose is available — a plain
+`docker compose up -d` on any host is all that's required. Set `API_KEY`
+(see [Authentication](#authentication)) before exposing them.
+
+### Optional: Coolify
 
 1. Push this repository to GitHub.
 2. In Coolify, create a new **Docker Compose** resource pointing at this repo.

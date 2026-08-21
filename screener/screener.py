@@ -285,8 +285,8 @@ def take_screenshot():
         if request_stats['total_requests'] % 10 == 0:
             cleanup_old_screenshots()
         
-        data = request.get_json()
-        
+        data = request.get_json(silent=True)
+
         if not data or 'url' not in data:
             return jsonify({
                 'success': False,

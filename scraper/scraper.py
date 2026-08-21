@@ -623,8 +623,8 @@ def extract_article():
             logger.warning(f"Rate limit exceeded for IP: {client_ip}")
             return jsonify(error_response), 429
         
-        # Get and validate input
-        data = request.get_json()
+        # Get and validate input (silent=True -> malformed/empty body yields a clean 400)
+        data = request.get_json(silent=True)
         if not data:
             error_response = create_error_response("invalid_request", "Request must contain valid JSON", None)
             return jsonify(error_response), 400

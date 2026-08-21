@@ -101,6 +101,18 @@ request_stats = {
     'start_time': datetime.now()
 }
 
+# Capture the real resolver before installing the SSRF guard below.
+_real_getaddrinfo = socket.getaddrinfo
+
+def _ip_is_public(ip_str):
+    """True only for globally routable addresses (blocks private/loopback/etc.)."""
+    try:
+        ip = ipaddress.ip_address(ip_str)
+    except ValueError:
+        return False
+    return not (ip.is_private or ip.is_loopback or ip.is_link_local or
+                ip.is_reserved or ip.is_multicast or ip.is_unspecified)
+
 def is_safe_url(url):
     """SSRF guard: allow only http/https URLs that resolve to public IP addresses."""
     try:
@@ -116,17 +128,31 @@ def is_safe_url(url):
         return False, "URL is missing a hostname"
 
     try:
-        addr_info = socket.getaddrinfo(hostname, None)
+        addr_info = _real_getaddrinfo(hostname, None)
     except Exception:
         return False, "Hostname could not be resolved"
 
     for info in addr_info:
-        ip = ipaddress.ip_address(info[4][0])
-        if (ip.is_private or ip.is_loopback or ip.is_link_local or
-                ip.is_reserved or ip.is_multicast or ip.is_unspecified):
+        if not _ip_is_public(info[4][0]):
             return False, "URL resolves to a non-public address"
 
     return True, "URL is safe"
+
+def _guarded_getaddrinfo(host, *args, **kwargs):
+    """Drop any non-public results so a socket can never be opened to an internal
+    address — even if DNS changes between validation and connect. This closes the
+    DNS-rebinding / TOCTOU gap that is_safe_url() alone leaves open, because this is
+    the same resolution requests/urllib3 use to establish the connection.
+    """
+    results = _real_getaddrinfo(host, *args, **kwargs)
+    safe = [r for r in results if _ip_is_public(r[4][0])]
+    if not safe:
+        raise socket.gaierror(f"blocked resolution to non-public address for host {host!r}")
+    return safe
+
+# Install process-wide. The scraper's only outbound traffic is fetching
+# user-supplied URLs, so a blanket public-only resolution policy is safe here.
+socket.getaddrinfo = _guarded_getaddrinfo
 
 def fetch_url_with_session(url, timeout=30):
     """Fetch URL using the pooled session with SSRF-safe redirect handling and a size cap.

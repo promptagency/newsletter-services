@@ -1,9 +1,9 @@
 # Newsletter Content Extraction Services
 
-[![License: MIT](https://img.shields.io/github/license/promptagency/newsletter-services)](LICENSE)
-[![Last commit](https://img.shields.io/github/last-commit/promptagency/newsletter-services)](https://github.com/promptagency/newsletter-services/commits)
-[![Top language](https://img.shields.io/github/languages/top/promptagency/newsletter-services)](https://github.com/promptagency/newsletter-services)
-[![Open issues](https://img.shields.io/github/issues/promptagency/newsletter-services)](https://github.com/promptagency/newsletter-services/issues)
+[![License: MIT](https://img.shields.io/github/license/promptagency/newsletter-services?color=blue)](LICENSE)
+[![Last commit](https://img.shields.io/github/last-commit/promptagency/newsletter-services?color=blue)](https://github.com/promptagency/newsletter-services/commits)
+[![Top language](https://img.shields.io/github/languages/top/promptagency/newsletter-services?color=blue)](https://github.com/promptagency/newsletter-services)
+[![Open issues](https://img.shields.io/github/issues/promptagency/newsletter-services?color=blue)](https://github.com/promptagency/newsletter-services/issues)
 
 Two Flask-based microservices that power AI-driven newsletter curation:
 

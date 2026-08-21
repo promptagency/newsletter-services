@@ -208,8 +208,18 @@ The services run anywhere Docker Compose is available — a plain
 
 ## Verification
 
-Both services were run under `gunicorn` with `API_KEY` set and exercised
-end-to-end. The security-relevant behaviour is confirmed:
+Run the full end-to-end check against a real Docker build:
+
+```bash
+./scripts/verify.sh
+```
+
+It builds both images, boots the stack with a throwaway `API_KEY`, and asserts
+auth, SSRF blocking, a real screenshot (container Chromium), and the
+redirect-SSRF guard — then tears everything down and prints a pass/fail tally.
+Requires a running Docker daemon with the compose plugin.
+
+The security-relevant behaviour it confirms:
 
 | Case                                             | Scraper `/extract` | Screener `/screenshot` |
 |--------------------------------------------------|:------------------:|:----------------------:|
@@ -222,21 +232,13 @@ end-to-end. The security-relevant behaviour is confirmed:
 | SSRF — `file://` scheme                          | `400`              | `400`                  |
 | Malformed / empty JSON body                      | `400`              | `400`                  |
 | Path traversal on file serving                   | n/a                | `404`                  |
-| Valid request with correct key                   | `200` (markdown)   | (needs Chromium)       |
+| Valid request with correct key                   | `200` (markdown)   | `200` (PNG/JPEG)       |
+| Redirect (public URL) → internal IP              | blocked per hop    | blocked in-browser     |
 
-The scraper was verified against a live URL (markdown + metadata extracted
-correctly with trafilatura 2.2.0). The screener's auth and URL-validation
-layers were verified directly; taking an actual screenshot requires the
-container's bundled Chromium, so confirm that with a full Compose build:
-
-```bash
-API_KEY=$(openssl rand -hex 32) docker compose up -d --build
-curl -s localhost:5002/health
-curl -s -X POST localhost:5002/screenshot \
-  -H "Content-Type: application/json" \
-  -H "X-API-Key: $API_KEY" \
-  -d '{"url":"https://example.com"}'
-```
+The scraper extracts a live URL correctly (trafilatura 2.2.0), the screener
+produces a real screenshot via the container's bundled Chromium, and a public
+URL that 302-redirects to an internal address is blocked — in the scraper by
+re-validating every hop, in the screener by aborting the navigation in Chromium.
 
 ## License
 

@@ -52,6 +52,26 @@ Services will be available at:
 - Scraper: <http://localhost:5001>
 - Screener: <http://localhost:5002>
 
+## Authentication
+
+Set an `API_KEY` (see [`.env.example`](.env.example)) to require an
+`X-API-Key` header on every endpoint **except** the health checks
+(`/stats` and `/health`, so container healthchecks keep working). If `API_KEY`
+is left empty, authentication is disabled and the service logs a warning at
+startup — do not run publicly without a key.
+
+```bash
+# Generate a strong key
+openssl rand -hex 32
+```
+
+Requests then include the header:
+```bash
+-H "X-API-Key: <your-key>"
+```
+
+Requests with a missing or invalid key receive `401 Unauthorized`.
+
 ## API Usage
 
 ### Scraper — `POST /extract`
@@ -60,6 +80,7 @@ Request:
 ```bash
 curl -X POST http://localhost:5001/extract \
   -H "Content-Type: application/json" \
+  -H "X-API-Key: $API_KEY" \
   -d '{
     "url": "https://example.com/article",
     "extract_images": true,
@@ -113,6 +134,7 @@ Request:
 ```bash
 curl -X POST http://localhost:5002/screenshot \
   -H "Content-Type: application/json" \
+  -H "X-API-Key: $API_KEY" \
   -d '{
     "url": "https://example.com",
     "format": "jpeg",

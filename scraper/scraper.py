@@ -1,5 +1,5 @@
 from flask import Flask, request, jsonify
-from trafilatura import fetch_url, extract, extract_metadata
+from trafilatura import extract, extract_metadata
 from trafilatura.settings import use_config
 import logging
 import time
@@ -12,12 +12,18 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 import os
+import socket
+import ipaddress
+import hmac
 
 # Configuration from environment variables
 FLASK_PORT = int(os.getenv('SCRAPER_PORT', '5001'))
 CACHE_DURATION_MINUTES = int(os.getenv('SCRAPER_CACHE_DURATION', '60'))
 RATE_LIMIT_SECONDS = int(os.getenv('SCRAPER_RATE_LIMIT', '2'))
 LOG_FILE = os.getenv('SCRAPER_LOG_FILE', '/tmp/scraper.log')
+MAX_CONTENT_BYTES = int(os.getenv('SCRAPER_MAX_CONTENT_BYTES', str(10 * 1024 * 1024)))  # 10 MB
+MAX_REDIRECTS = int(os.getenv('SCRAPER_MAX_REDIRECTS', '5'))
+API_KEY = os.getenv('API_KEY', '').strip()
 
 # Configure logging to both file and console
 logging.basicConfig(
@@ -29,6 +35,10 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+if not API_KEY:
+    logger.warning("API_KEY not set — request authentication is DISABLED. "
+                   "Set the API_KEY environment variable to require an X-API-Key header.")
 
 # Configure requests session with connection pooling
 session = requests.Session()
@@ -62,6 +72,20 @@ config.set('DEFAULT', 'MIN_EXTRACTED_SIZE', '25')
 
 app = Flask(__name__)
 
+# Endpoints that stay open so container healthchecks work without a key
+PUBLIC_PATHS = {'/stats'}
+
+@app.before_request
+def require_api_key():
+    """Require a valid X-API-Key header when API_KEY is configured."""
+    if not API_KEY:
+        return  # authentication disabled
+    if request.path in PUBLIC_PATHS:
+        return
+    provided = request.headers.get('X-API-Key', '')
+    if not (provided and hmac.compare_digest(provided, API_KEY)):
+        return jsonify(create_error_response("unauthorized", "Missing or invalid API key")), 401
+
 # Simple rate limiting
 last_request_times = {}
 
@@ -77,13 +101,89 @@ request_stats = {
     'start_time': datetime.now()
 }
 
-def fetch_url_with_session(url, timeout=30):
-    """Fetch URL using connection pooling session"""
+def is_safe_url(url):
+    """SSRF guard: allow only http/https URLs that resolve to public IP addresses."""
     try:
-        response = session.get(url, timeout=timeout, allow_redirects=True)
-        response.raise_for_status()
-        request_stats['successful_fetches'] += 1
-        return response.text
+        parsed = urlparse(url)
+    except Exception:
+        return False, "Could not parse URL"
+
+    if parsed.scheme not in ('http', 'https'):
+        return False, f"Unsupported scheme '{parsed.scheme}' (only http/https allowed)"
+
+    hostname = parsed.hostname
+    if not hostname:
+        return False, "URL is missing a hostname"
+
+    try:
+        addr_info = socket.getaddrinfo(hostname, None)
+    except Exception:
+        return False, "Hostname could not be resolved"
+
+    for info in addr_info:
+        ip = ipaddress.ip_address(info[4][0])
+        if (ip.is_private or ip.is_loopback or ip.is_link_local or
+                ip.is_reserved or ip.is_multicast or ip.is_unspecified):
+            return False, "URL resolves to a non-public address"
+
+    return True, "URL is safe"
+
+def fetch_url_with_session(url, timeout=30):
+    """Fetch URL using the pooled session with SSRF-safe redirect handling and a size cap.
+
+    Redirects are followed manually so each hop is re-validated against is_safe_url;
+    this prevents a public URL from bouncing the fetch to an internal target.
+    """
+    current_url = url
+    try:
+        for _ in range(MAX_REDIRECTS + 1):
+            is_safe, reason = is_safe_url(current_url)
+            if not is_safe:
+                logger.warning(f"Blocked unsafe fetch target {current_url}: {reason}")
+                request_stats['failed_fetches'] += 1
+                return None
+
+            response = session.get(current_url, timeout=timeout,
+                                   allow_redirects=False, stream=True)
+
+            if response.status_code in (301, 302, 303, 307, 308):
+                location = response.headers.get('Location')
+                response.close()
+                if not location:
+                    break
+                current_url = urljoin(current_url, location)
+                continue
+
+            response.raise_for_status()
+
+            # Reject oversized responses up front when the server declares a length
+            declared = response.headers.get('Content-Length')
+            if declared and declared.isdigit() and int(declared) > MAX_CONTENT_BYTES:
+                logger.warning(f"Response too large ({declared} bytes): {current_url}")
+                response.close()
+                request_stats['failed_fetches'] += 1
+                return None
+
+            # Stream with a hard cap in case Content-Length is missing or understated
+            chunks = []
+            total = 0
+            for chunk in response.iter_content(chunk_size=65536):
+                total += len(chunk)
+                if total > MAX_CONTENT_BYTES:
+                    logger.warning(f"Response exceeded size cap while streaming: {current_url}")
+                    response.close()
+                    request_stats['failed_fetches'] += 1
+                    return None
+                chunks.append(chunk)
+
+            encoding = response.encoding or 'utf-8'
+            response.close()
+            request_stats['successful_fetches'] += 1
+            return b''.join(chunks).decode(encoding, errors='replace')
+
+        logger.error(f"Too many redirects fetching URL: {url}")
+        request_stats['failed_fetches'] += 1
+        return None
     except requests.exceptions.Timeout:
         logger.error(f"Timeout fetching URL: {url}")
         request_stats['failed_fetches'] += 1
@@ -465,6 +565,11 @@ def sanitize_url(url):
 def rate_limit_check(client_ip):
     """Simple rate limiting for responsible scraping"""
     current_time = time.time()
+    # Bound memory: drop entries older than an hour once the map grows large
+    if len(last_request_times) > 10000:
+        stale = [ip for ip, ts in last_request_times.items() if current_time - ts > 3600]
+        for ip in stale:
+            del last_request_times[ip]
     if client_ip in last_request_times:
         time_since_last = current_time - last_request_times[client_ip]
         if time_since_last < RATE_LIMIT_SECONDS:
@@ -510,8 +615,9 @@ def extract_article():
     request_stats['total_requests'] += 1
     
     try:
-        # Rate limiting
-        client_ip = request.environ.get('HTTP_X_FORWARDED_FOR', request.remote_addr)
+        # Rate limiting (X-Forwarded-For is client-controlled; use the leftmost hop)
+        forwarded = request.headers.get('X-Forwarded-For', '')
+        client_ip = forwarded.split(',')[0].strip() if forwarded else request.remote_addr
         if not rate_limit_check(client_ip):
             error_response = create_error_response("rate_limit", f"Rate limit exceeded. Please wait {RATE_LIMIT_SECONDS} seconds between requests.", None)
             logger.warning(f"Rate limit exceeded for IP: {client_ip}")
@@ -552,7 +658,14 @@ def extract_article():
             error_response = create_error_response("invalid_url", validation_message, url)
             logger.warning(f"URL validation failed: {url} - {validation_message}")
             return jsonify(error_response), 400
-        
+
+        # SSRF protection: reject targets that resolve to non-public addresses
+        is_safe, safe_reason = is_safe_url(url)
+        if not is_safe:
+            error_response = create_error_response("blocked_url", safe_reason, url)
+            logger.warning(f"Blocked potential SSRF: {url} - {safe_reason}")
+            return jsonify(error_response), 400
+
         if url != raw_url.strip():
             logger.info(f"URL sanitized: '{raw_url}' -> '{url}'")
         
@@ -593,13 +706,6 @@ def extract_article():
         if extract_links_flag:
             external_links = extract_external_links(html, url, content_only)
         
-        # Extract text content
-        try:
-            text = extract(html)
-            logger.info(f"Basic text extraction: {'Success' if text else 'Failed'}")
-        except Exception as e:
-            logger.error(f"Basic text extraction failed: {e}")
-            
         # Extract markdown
         try:
             markdown = extract(html,
@@ -607,7 +713,8 @@ def extract_article():
                              include_images=True,
                              output_format='markdown',
                              favor_precision=True,
-                             favor_recall=False)
+                             favor_recall=False,
+                             config=config)
             logger.info(f"Markdown extraction: {'Success' if markdown else 'Failed'}")
             
             # Extract metadata
@@ -633,7 +740,7 @@ def extract_article():
                 return jsonify(response_data)
             else:
                 # Fallback to plain text
-                text = extract(html)
+                text = extract(html, config=config)
                 if text:
                     logger.info(f"Fallback to plain text successful ({len(text)} characters)")
                     
@@ -654,7 +761,7 @@ def extract_article():
             return jsonify(error_response), 500
             
     except Exception as e:
-        error_response = create_error_response("internal_error", f"Unexpected server error: {str(e)}", request.json.get('url') if request.json else None)
+        error_response = create_error_response("internal_error", f"Unexpected server error: {str(e)}", locals().get('url'))
         logger.error(f"Unexpected error: {e}")
         return jsonify(error_response), 500
 

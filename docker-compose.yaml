@@ -2,6 +2,8 @@ services:
   scraper:
     build: ./scraper
     container_name: newsletter-scraper
+    environment:
+      - API_KEY=${API_KEY:-}
     ports:
       - "5001:5001"
     restart: unless-stopped
@@ -17,6 +19,8 @@ services:
   screener:
     build: ./screener
     container_name: newsletter-screener
+    environment:
+      - API_KEY=${API_KEY:-}
     ports:
       - "5002:5002"
     restart: unless-stopped

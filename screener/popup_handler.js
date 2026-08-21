@@ -4,7 +4,7 @@ async function takeScreenshot(url, outputPath, options = {}) {
     let browser;
     try {
         browser = await puppeteer.launch({
-            headless: 'new',
+            headless: true,
             executablePath: '/usr/bin/chromium',
             args: [
                 '--no-sandbox',
@@ -15,14 +15,13 @@ async function takeScreenshot(url, outputPath, options = {}) {
                 '--disable-background-timer-throttling',
                 '--disable-backgrounding-occluded-windows',
                 '--disable-renderer-backgrounding',
-                '--disable-web-security',
                 '--disable-features=VizDisplayCompositor'
             ]
         });
         
         const page = await browser.newPage();
         
-        await page.setUserAgent('Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
+        await page.setUserAgent('Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36');
         
         await page.setViewport({
             width: options.width || 1200,

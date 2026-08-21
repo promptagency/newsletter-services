@@ -1,8 +1,13 @@
-from flask import Flask, request, jsonify, send_file
+from flask import Flask, request, jsonify, send_from_directory
+from werkzeug.exceptions import NotFound
 import subprocess
 import os
 import hashlib
 import time
+import socket
+import ipaddress
+import hmac
+from urllib.parse import urlparse
 from datetime import datetime, timedelta
 from PIL import Image
 import logging
@@ -15,6 +20,7 @@ CLEANUP_OLDER_THAN_HOURS = int(os.getenv('SCREENER_CLEANUP_HOURS', '24'))
 LOG_FILE = os.getenv('SCREENER_LOG_FILE', '/tmp/screener.log')
 NODE_MODULES_PATH = os.getenv('NODE_MODULES_PATH', '/app/node_modules')
 PUPPETEER_SCRIPT = os.getenv('PUPPETEER_SCRIPT', '/app/popup_handler.js')
+API_KEY = os.getenv('API_KEY', '').strip()
 
 # Configure logging
 logging.basicConfig(
@@ -27,7 +33,25 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+if not API_KEY:
+    logger.warning("API_KEY not set — request authentication is DISABLED. "
+                   "Set the API_KEY environment variable to require an X-API-Key header.")
+
 app = Flask(__name__)
+
+# Endpoints that stay open so container healthchecks work without a key
+PUBLIC_PATHS = {'/health'}
+
+@app.before_request
+def require_api_key():
+    """Require a valid X-API-Key header when API_KEY is configured."""
+    if not API_KEY:
+        return  # authentication disabled
+    if request.path in PUBLIC_PATHS:
+        return
+    provided = request.headers.get('X-API-Key', '')
+    if not (provided and hmac.compare_digest(provided, API_KEY)):
+        return jsonify({'success': False, 'error': 'Missing or invalid API key'}), 401
 
 # Ensure screenshot directory exists
 os.makedirs(SCREENSHOT_DIR, exist_ok=True)
@@ -43,6 +67,37 @@ request_stats = {
     'failed_screenshots': 0,
     'start_time': datetime.now()
 }
+
+def is_safe_url(url):
+    """SSRF guard: allow only http/https URLs that resolve to public IP addresses.
+
+    Blocks file:// (local file read via the browser), internal hosts, and the
+    cloud metadata endpoint from being passed to Puppeteer.
+    """
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return False, "Could not parse URL"
+
+    if parsed.scheme not in ('http', 'https'):
+        return False, f"Unsupported scheme '{parsed.scheme}' (only http/https allowed)"
+
+    hostname = parsed.hostname
+    if not hostname:
+        return False, "URL is missing a hostname"
+
+    try:
+        addr_info = socket.getaddrinfo(hostname, None)
+    except Exception:
+        return False, "Hostname could not be resolved"
+
+    for info in addr_info:
+        ip = ipaddress.ip_address(info[4][0])
+        if (ip.is_private or ip.is_loopback or ip.is_link_local or
+                ip.is_reserved or ip.is_multicast or ip.is_unspecified):
+            return False, "URL resolves to a non-public address"
+
+    return True, "URL is safe"
 
 def cleanup_old_screenshots():
     """Remove screenshots older than specified hours"""
@@ -211,13 +266,11 @@ def get_status():
 
 @app.route('/screenshot/<filename>', methods=['GET'])
 def serve_screenshot(filename):
-    """Serve a screenshot file"""
+    """Serve a screenshot file (send_from_directory guards against path traversal)"""
     try:
-        filepath = os.path.join(SCREENSHOT_DIR, filename)
-        if os.path.exists(filepath):
-            return send_file(filepath)
-        else:
-            return jsonify({'error': 'Screenshot not found'}), 404
+        return send_from_directory(SCREENSHOT_DIR, filename)
+    except NotFound:
+        return jsonify({'error': 'Screenshot not found'}), 404
     except Exception as e:
         logger.error(f"Error serving screenshot: {e}")
         return jsonify({'error': str(e)}), 500
@@ -241,7 +294,17 @@ def take_screenshot():
             }), 400
         
         url = data['url']
-        
+
+        # SSRF protection: only allow public http(s) targets
+        # (blocks file://, localhost, internal ranges, and metadata endpoints)
+        is_safe, safe_reason = is_safe_url(url)
+        if not is_safe:
+            logger.warning(f"Blocked potential SSRF: {url} - {safe_reason}")
+            return jsonify({
+                'success': False,
+                'error': f'URL not allowed: {safe_reason}'
+            }), 400
+
         # Screenshot options with format support and type conversion
         try:
             width = int(data.get('width', 1200))

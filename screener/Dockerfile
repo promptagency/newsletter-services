@@ -28,8 +28,8 @@ RUN apt-get update && apt-get install -y \
 # Set working directory
 WORKDIR /app
 
-# Install Puppeteer
-RUN npm install puppeteer
+# Install Puppeteer (pinned for reproducible builds)
+RUN npm install puppeteer@25.8.0
 
 # Copy Python requirements and install
 COPY requirements.txt .
@@ -50,5 +50,5 @@ ENV PYTHONUNBUFFERED=1
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
 
-# Run the application
-CMD ["python3", "screener.py"]
+# Run the application with a production WSGI server
+CMD ["sh", "-c", "gunicorn --bind 0.0.0.0:${SCREENER_PORT:-5002} --workers 1 --threads 2 --timeout 120 --access-logfile - screener:app"]

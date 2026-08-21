@@ -1,4 +1,4 @@
-const puppeteer = require('/opt/screener/node_modules/puppeteer');
+const puppeteer = require('/app/node_modules/puppeteer');
 
 async function takeScreenshot(url, outputPath, options = {}) {
     let browser;

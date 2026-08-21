@@ -43,6 +43,3 @@ screener_screenshots/
 # Node modules
 node_modules/
 package-lock.json
-
-# Docker
-.dockerignore

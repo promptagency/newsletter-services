@@ -1,0 +1,25 @@
+# Git
+.git/
+.gitignore
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Logs
+*.log
+
+# Environment variables
+.env
+
+# Node
+node_modules/
+
+# Screenshots and cache
+screenshots/
+screener_screenshots/
+
+# OS
+.DS_Store
+Thumbs.db

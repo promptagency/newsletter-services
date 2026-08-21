@@ -47,7 +47,7 @@ session.mount('https://', adapter)
 
 # Set default headers for the session
 session.headers.update({
-    'User-Agent': 'Mozilla/5.0 (X11; Linux armv7l) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+    'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
     'Accept-Language': 'en-US,en;q=0.5',
     'Accept-Encoding': 'gzip, deflate',
@@ -56,7 +56,7 @@ session.headers.update({
 
 # Configure trafilatura with better user agent and timeout
 config = use_config()
-config.set('DEFAULT', 'USER_AGENT', 'Mozilla/5.0 (X11; Linux armv7l) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36')
+config.set('DEFAULT', 'USER_AGENT', 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36')
 config.set('DEFAULT', 'DOWNLOAD_TIMEOUT', '30')
 config.set('DEFAULT', 'MIN_EXTRACTED_SIZE', '25')
 

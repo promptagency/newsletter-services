@@ -203,6 +203,38 @@ The services run anywhere Docker Compose is available — a plain
 4. Set any environment variable overrides from `.env.example` in the Coolify UI.
 5. Deploy.
 
+## Verification
+
+Both services were run under `gunicorn` with `API_KEY` set and exercised
+end-to-end. The security-relevant behaviour is confirmed:
+
+| Case                                             | Scraper `/extract` | Screener `/screenshot` |
+|--------------------------------------------------|:------------------:|:----------------------:|
+| Health endpoint without key (`/stats`, `/health`)| `200`              | `200`                  |
+| Request without API key                          | `401`              | `401`                  |
+| Request with wrong API key                       | `401`              | `401`                  |
+| SSRF — cloud metadata IP (`169.254.169.254`)     | `400`              | `400`                  |
+| SSRF — loopback / `127.0.0.1`                    | `400`              | `400`                  |
+| SSRF — private range (`10.0.0.0/8`)              | `400`              | `400`                  |
+| SSRF — `file://` scheme                          | `400`              | `400`                  |
+| Malformed / empty JSON body                      | `400`              | `400`                  |
+| Path traversal on file serving                   | n/a                | `404`                  |
+| Valid request with correct key                   | `200` (markdown)   | (needs Chromium)       |
+
+The scraper was verified against a live URL (markdown + metadata extracted
+correctly with trafilatura 2.2.0). The screener's auth and URL-validation
+layers were verified directly; taking an actual screenshot requires the
+container's bundled Chromium, so confirm that with a full Compose build:
+
+```bash
+API_KEY=$(openssl rand -hex 32) docker compose up -d --build
+curl -s localhost:5002/health
+curl -s -X POST localhost:5002/screenshot \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: $API_KEY" \
+  -d '{"url":"https://example.com"}'
+```
+
 ## License
 
 [MIT](LICENSE) © Prompt Agency AB
